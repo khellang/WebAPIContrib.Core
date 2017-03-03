@@ -12,9 +12,8 @@ namespace WebApiContrib.Core.Versioning
         /// Creates an instance of <see cref="MissingModelMapperException"/>.
         /// </summary>
         /// <param name="modelType">The type of model that does not have a registered mapper.</param>
-        /// <param name="innerException">The inner exception.</param>
-        public MissingModelMapperException(Type modelType, Exception innerException)
-            : base($"Could not find a registered mapper for '{modelType.FullName}'.", innerException)
+        public MissingModelMapperException(Type modelType)
+            : base($"Could not find a registered mapper for '{modelType.FullName}'.")
         {
             ModelType = modelType;
         }

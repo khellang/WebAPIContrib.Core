@@ -29,7 +29,7 @@ namespace WebApiContrib.Core.Samples
 
         public void ConfigureServices(IServiceCollection services)
         {
-            services.AddSingleton<IModelMapper<PersonModel>, PersonModelMapper>();
+            services.AddSingleton<IModelMapperProvider, PersonModelMapper>();
 
             services.AddMvc(o =>
                 {

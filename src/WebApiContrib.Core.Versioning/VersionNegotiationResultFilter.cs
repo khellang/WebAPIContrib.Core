@@ -1,11 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Reflection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Http;
+using System.Linq;
+using System.Reflection;
 
 namespace WebApiContrib.Core.Versioning
 {
@@ -17,25 +17,17 @@ namespace WebApiContrib.Core.Versioning
         /// <summary>
         /// Creates a new instance of <see cref="VersionNegotiationResultFilter"/>.
         /// </summary>
-        /// <param name="serviceProvider">The service provider to get strategies and mappers from.</param>
         /// <param name="options">The versioning options.</param>
-        public VersionNegotiationResultFilter(IServiceProvider serviceProvider, IOptions<VersionNegotiationOptions> options)
+        public VersionNegotiationResultFilter(IVersionStrategy strategy, IEnumerable<IModelMapperProvider> mapperProviders, IOptions<VersionNegotiationOptions> options)
         {
-            if (serviceProvider == null)
-            {
-                throw new ArgumentNullException(nameof(serviceProvider));
-            }
-
-            if (options == null)
-            {
-                throw new ArgumentNullException(nameof(options));
-            }
-
-            ServiceProvider = serviceProvider;
-            Options = options;
+            Strategy = strategy ?? throw new ArgumentNullException(nameof(strategy));
+            MapperProviders = mapperProviders ?? throw new ArgumentNullException(nameof(mapperProviders));
+            Options = options ?? throw new ArgumentNullException(nameof(options));
         }
 
-        private IServiceProvider ServiceProvider { get; }
+        private IVersionStrategy Strategy { get; }
+
+        private IEnumerable<IModelMapperProvider> MapperProviders { get; }
 
         private IOptions<VersionNegotiationOptions> Options { get; }
 
@@ -47,29 +39,35 @@ namespace WebApiContrib.Core.Versioning
                 throw new ArgumentNullException(nameof(context));
             }
 
-            var result = Options.Value.RequireVersionedObjectResult
-                ? context.Result as VersionedObjectResult
-                : context.Result as ObjectResult;
+            var result = context.Result as ObjectResult;
 
-            if (result == null)
+            if (result == null || result.Value == null)
             {
                 return;
             }
 
-            var strategy = ServiceProvider.GetRequiredService<IVersionStrategy>();
+            var versionResult = Strategy.GetVersion(context.HttpContext, context.RouteData);
 
-            var versionResult = strategy.GetVersion(context.HttpContext, context.RouteData);
-
-            context.Result = MapResult(result, versionResult?.Version);
-
-            if (!versionResult.HasValue)
+            if (versionResult.HasValue)
             {
+                var value = versionResult.Value;
+
+                var newValue = MapResult(result, value.Version);
+
+                context.Result = new ObjectResult(newValue);
+
+                if (Options.Value.EmitVaryHeader && !string.IsNullOrEmpty(value.VaryOn))
+                {
+                    context.HttpContext.Response.Headers.Append("Vary", value.VaryOn);
+                }
+
                 return;
             }
-
-            if (Options.Value.EmitVaryHeader && !string.IsNullOrEmpty(versionResult.Value.VaryOn))
+            else
             {
-                context.HttpContext.Response.Headers.Append("Vary", versionResult.Value.VaryOn);
+                var newValue = MapResult(result, null);
+
+                context.Result = new ObjectResult(newValue);
             }
         }
 
@@ -79,108 +77,79 @@ namespace WebApiContrib.Core.Versioning
             // Meh. Not used.
         }
 
-        private IActionResult MapResult(ObjectResult result, int? version)
+        private object MapResult(ObjectResult result, int? version)
         {
-            Type itemType;
-            if (TryGetCollectionType(result.Value, out itemType))
+            var resultType = GetResultType(result, out var isCollection);
+
+            var mapper = GetMapper(resultType, version);
+
+            if (mapper == null || resultType == mapper.ResultType)
             {
-                return MapCollectionResult(result, version, itemType);
+                return result.Value;
             }
 
-            return MapSingleResult(result, version);
+            if (isCollection)
+            {
+                return mapper.MapCollection((IEnumerable<object>) result.Value);
+            }
+
+            return mapper.Map(result.Value);
         }
 
-        private IActionResult MapCollectionResult(ObjectResult result, int? version, Type itemType)
+        private static Type GetResultType(ObjectResult result, out bool isCollection)
         {
-            var mapperType = typeof(IModelMapper<>).MakeGenericType(itemType);
+            var resultType = result.DeclaredType;
 
-            var mapperTypeInfo = mapperType.GetTypeInfo();
-
-            var method = mapperTypeInfo.GetMethod(nameof(IModelMapper<string>.Map));
-
-            object mapper;
-
-            try
+            if (resultType == null || resultType == typeof(object))
             {
-                mapper = ServiceProvider.GetRequiredService(mapperType);
+                resultType = result.Value.GetType();
             }
-            catch (Exception ex)
+
+            if (resultType != typeof(string))
             {
-                if (Options.Value.ThrowOnMissingMapper)
+                if (resultType.IsArray)
                 {
-                    throw new MissingModelMapperException(itemType, ex);
+                    isCollection = true;
+                    return resultType.GetElementType();
                 }
 
-                return result;
+                if (resultType.IsAssignableToGenericTypeDefinition(typeof(IEnumerable<>), out var typeArguments))
+                {
+                    isCollection = true;
+                    return typeArguments[0];
+                }
             }
 
-            var list = new List<object>();
-
-            var collection = (IEnumerable<object>) result.Value;
-
-            foreach (var item in collection)
-            {
-                list.Add(method.Invoke(mapper, new[] { item, version }));
-            }
-
-            return new ObjectResult(list);
+            isCollection = false;
+            return resultType;
         }
 
-        private IActionResult MapSingleResult(ObjectResult result, int? version)
+        private IModelMapper GetMapper(Type type, int? version)
         {
-            var value = result.Value;
+            var provider = GetProvider(type);
 
-            var valueType = value.GetType();
-
-            var mapperType = typeof(IModelMapper<>).MakeGenericType(valueType);
-
-            var mapperTypeInfo = mapperType.GetTypeInfo();
-
-            var method = mapperTypeInfo.GetMethod(nameof(IModelMapper<string>.Map));
-
-            object mapper;
-
-            try
+            if (provider != null)
             {
-                mapper = ServiceProvider.GetRequiredService(mapperType);
-            }
-            catch (Exception ex)
-            {
-                if (Options.Value.ThrowOnMissingMapper)
+                // TODO: Cache registry.
+                var registry = provider.GetRegistry();
+
+                if (registry.TryGetMapper(version, out var mapper))
                 {
-                    throw new MissingModelMapperException(valueType, ex);
+                    return mapper;
                 }
-
-                return result;
             }
 
-            var newValue = method.Invoke(mapper, new[] { value, version });
+            if (Options.Value.ThrowOnMissingMapper)
+            {
+                throw new MissingModelMapperException(type);
+            }
 
-            return new ObjectResult(newValue);
+            return null;
         }
 
-        private static bool TryGetCollectionType(object value, out Type itemType)
+        private IModelMapperProvider GetProvider(Type type)
         {
-            var type = value.GetType();
-
-            if (type != typeof(string))
-            {
-                if (type.IsArray)
-                {
-                    itemType = type.GetElementType();
-                    return true;
-                }
-
-                Type[] typeArguments;
-                if (type.IsAssignableToGenericTypeDefinition(typeof(IEnumerable<>), out typeArguments))
-                {
-                    itemType = typeArguments[0];
-                    return true;
-                }
-            }
-
-            itemType = default(Type);
-            return false;
+            return MapperProviders.FirstOrDefault(x => x.ModelType.GetTypeInfo().IsAssignableFrom(type));
         }
     }
 }

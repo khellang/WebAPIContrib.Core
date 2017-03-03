@@ -13,23 +13,11 @@ namespace WebApiContrib.Core.Versioning
         /// </summary>
         public VersionNegotiationOptions()
         {
-            RequireVersionedObjectResult = true;
             ThrowOnMissingMapper = true;
             EmitVaryHeader = true;
             ConfigureStrategy = new Dictionary<Type, Action<object>>();
             StrategyTypes = new List<Type>();
         }
-
-        /// <summary>
-        /// Gets or sets whether the user is required to explicitly return a
-        /// <see cref="VersionedObjectResult"/> instead of a plain
-        /// <see cref="Microsoft.AspNetCore.Mvc.ObjectResult"/> in
-        /// order to negotiate a versioned representation.
-        /// </summary>
-        /// <remarks>
-        /// The default is <c>true</c>.
-        /// </remarks>
-        public bool RequireVersionedObjectResult { get; set; }
 
         /// <summary>
         /// Gets or sets whether the response will contain a Vary HTTP header

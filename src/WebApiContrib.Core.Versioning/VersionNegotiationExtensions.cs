@@ -139,7 +139,10 @@ namespace WebApiContrib.Core.Versioning
                     Options.Value.UseAcceptHeaderParameterStrategy();
                 }
 
-                options.Filters.Add(new VersionNegotiationResultFilter(ServiceProvider, Options));
+                var strategy = ServiceProvider.GetRequiredService<IVersionStrategy>();
+                var mapperProviders = ServiceProvider.GetServices<IModelMapperProvider>();
+
+                options.Filters.Add(new VersionNegotiationResultFilter(strategy, mapperProviders, Options));
             }
         }
     }

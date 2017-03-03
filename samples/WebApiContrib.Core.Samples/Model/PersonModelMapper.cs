@@ -2,16 +2,12 @@
 
 namespace WebApiContrib.Core.Samples.Model
 {
-    public class PersonModelMapper : IModelMapper<PersonModel>
+    public class PersonModelMapper : ModelMapperProvider<PersonModel>
     {
-        public object Map(PersonModel model, int? version)
+        protected override void Populate(ModelMapperRegistry registry)
         {
-            if (version == 2)
-            {
-                return new PersonModel.V2(model);
-            }
-
-            return model;
+            registry.MapDefault(model => model);
+            registry.Map(2, model => new PersonModel.V2(model));
         }
     }
 }
